@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1424">
+<title>AI Class Monitor</title>
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+:root{color-scheme:dark;--bg:#0b1424;--panel:#142238;--panel2:#0e1a2d;--line:#293c58;--muted:#a7b6ca;--green:#55d6a5;--white:#f4f7fb;--red:#ff7777}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(160deg,#091321,#101e32);color:var(--white);font:16px system-ui,-apple-system,Segoe UI,sans-serif;min-height:100vh}
+main{width:min(720px,100%);margin:auto;padding:20px 15px 40px}.brand{text-align:center;padding:16px 6px 18px}.mark{font-size:40px;color:var(--green)}h1{font-size:28px;margin:4px 0}h2{font-size:21px;margin:0 0 10px}p{color:var(--muted);line-height:1.5;margin:8px 0 14px}.card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:17px;margin:13px 0;box-shadow:0 8px 28px #0002}
+button{border:0;border-radius:12px;padding:14px 16px;background:var(--green);color:#062318;font-weight:750;font-size:15px;min-height:48px;flex:1}button.secondary{background:#293b56;color:var(--white)}button.danger{background:#512d3a;color:#ffe7ed}button:disabled{opacity:.45}.row{display:flex;gap:10px;flex-wrap:wrap}.status{padding:12px;border-radius:11px;background:var(--panel2);color:#d8e3f0;font-size:14px;margin-top:12px;min-height:44px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#8291a5;margin-right:8px}.dot.on{background:var(--green);box-shadow:0 0 12px #55d6a5}.meter{height:9px;border-radius:20px;background:#091321;overflow:hidden;margin:12px 0}.meter span{display:block;height:100%;width:0;background:var(--green);transition:width .12s}.hidden{display:none!important}small{color:var(--muted);line-height:1.5}#gallery{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}figure{margin:0;background:#0b1424;border:1px solid var(--line);border-radius:12px;overflow:hidden}figure img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block}figcaption{padding:8px;font-size:12px;color:var(--muted)}.tag{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:5px 9px;color:var(--muted);font-size:12px;margin:3px 4px 3px 0}.notice{border-color:#735b2d}.notice p{color:#f0d9a8}a{color:var(--green)}
+</style>
+</head>
+<body>
+<main>
+<header class="brand">
+ <div class="mark">◉</div>
+ <h1>AI Class Monitor</h1>
+ <p>Classroom sound monitoring · private on-device photo storage</p>
+ <span class="tag">Android friendly</span><span class="tag">Local storage</span><span class="tag">Passkey gallery lock</span><div style="margin-top:16px"><button id="installBtn" class="secondary hidden" style="max-width:260px">⬇ Install on this phone</button></div>
+</header>
+
+<section class="card">
+ <h2><span id="liveDot" class="dot"></span>Classroom monitoring</h2>
+ <p>Tap Start Monitoring to listen through the microphone. When speech is recognised and continues with sufficient sound activity for more than 5 seconds, the camera will briefly open and take one photo.</p>
+ <div class="row">
+  <button id="startBtn">▶ Start Monitoring</button>
+  <button id="stopBtn" class="secondary" disabled>■ Stop</button>
+ </div>
+ <div class="meter"><span id="meterBar"></span></div>
+ <div id="monitorStatus" class="status" aria-live="polite">Monitoring is stopped. Press Start Monitoring when the classroom is ready.</div>
+ <video id="preview" class="hidden" autoplay playsinline muted></video>
+ <p><small>Keep this page open in the foreground. The microphone is used while monitoring. The camera is requested only when a trigger occurs.</small></p>
+</section>
+
+<section class="card">
+ <h2>🔐 Private photo gallery</h2>
+ <p>Photos are saved in this phone's browser storage. Register a passkey once, then authenticate to view them.</p>
+ <div class="row">
+  <button id="registerBtn" class="secondary">Register phone passkey</button>
+  <button id="galleryBtn">Unlock gallery</button>
+ </div>
+ <div id="authStatus" class="status">Gallery locked. Register a passkey to protect access.</div>
+ <div id="galleryArea" class="hidden">
+  <p id="photoCount">0 photos saved on this phone.</p>
+  <div class="row">
+   <button id="refreshBtn" class="secondary">Refresh</button>
+   <button id="backupBtn" class="secondary">Export photo backup</button>
+   <button id="lockBtn" class="danger">Lock gallery</button>
+  </div>
+  <div id="gallery"></div>
+ </div>
+</section>
+
+<section class="card notice">
+ <h2>Important privacy & storage details</h2>
+ <p>Photos are stored locally in this website's IndexedDB storage in Chrome on this phone, not uploaded to a cloud service and not automatically added to the normal DCIM/Gallery folder. Use Export photo backup to download copies.</p>
+ <p>The passkey is an app-level gallery access gate. Browser storage is not separately encrypted by this prototype; someone with technical access to browser data may bypass the page lock. Clearing Chrome site data can erase saved photos. Get school approval and inform students/parents as required before recording.</p>
+</section>
+<footer><small>Prototype limitations: speech recognition depends on Android Chrome/browser support and may miss or misclassify sounds. Shouting is estimated using microphone loudness after speech is recognised; loud non-speech sounds can cause false triggers. This is not a certified classroom surveillance or emergency system.</small></footer>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const DB_NAME='ai-class-monitor-local',STORE='photos',PASSKEY_KEY='aicm-passkey-id';
+let db=null, audioStream=null, cameraStream=null, audioCtx=null, analyser=null, dataArray=null, recognition=null, deferredInstallPrompt=null;
+let monitoring=false, speechActiveAt=0, lastSpeechAt=0, eventCaptured=false, tick=null, unlocked=false, level=0;
+
+function setStatus(id,msg){$(id).textContent=msg}
+function randomBytes(n=32){return crypto.getRandomValues(new Uint8Array(n))}
+function b64url(buf){return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
+function unb64url(s){s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';return Uint8Array.from(atob(s),c=>c.charCodeAt(0))}
+function openDB(){return new Promise((resolve,reject)=>{let r=indexedDB.open(DB_NAME,1);r.onupgradeneeded=()=>{if(!r.result.objectStoreNames.contains(STORE))r.result.createObjectStore(STORE,{keyPath:'id',autoIncrement:true})};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}
+async function init(){db=await openDB();if(!window.PublicKeyCredential){setStatus('authStatus','This browser does not support passkeys. Use an updated Android Chrome browser.')}else if(localStorage.getItem(PASSKEY_KEY)){setStatus('authStatus','Passkey registered on this phone. Gallery is locked.')}}
+
+async function registerPasskey(){
+ try{
+  if(!window.PublicKeyCredential)throw Error('Passkeys are not supported in this browser.');
+  const credential=await navigator.credentials.create({publicKey:{
+   challenge:randomBytes(),rp:{name:'AI Class Monitor',id:location.hostname},
+   user:{id:randomBytes(16),name:'class-monitor-admin',displayName:'Class Monitor Administrator'},
+   pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],
+   authenticatorSelection:{authenticatorAttachment:'platform',residentKey:'preferred',userVerification:'required'},
+   timeout:60000,attestation:'none'
+  }});
+  if(!credential)throw Error('Passkey registration was cancelled.');
+  localStorage.setItem(PASSKEY_KEY,b64url(credential.rawId));
+  setStatus('authStatus','Passkey registered. Your Android device will verify you when you unlock the gallery.');
+ }catch(e){setStatus('authStatus','Passkey setup failed: '+(e.message||e))}
+}
+async function unlockGallery(){
+ try{
+  const id=localStorage.getItem(PASSKEY_KEY);if(!id)throw Error('Register the phone passkey first.');
+  const assertion=await navigator.credentials.get({publicKey:{challenge:randomBytes(),allowCredentials:[{type:'public-key',id:unb64url(id)}],userVerification:'required',timeout:60000}});
+  if(!assertion)throw Error('Authentication cancelled.');
+  unlocked=true;$('galleryArea').classList.remove('hidden');setStatus('authStatus','Gallery unlocked on this device.');await renderGallery();
+ }catch(e){setStatus('authStatus','Gallery remains locked: '+(e.message||e))}
+}
+function lockGallery(){unlocked=false;$('galleryArea').classList.add('hidden');setStatus('authStatus','Gallery locked.')}
+async function savePhoto(blob){
+ const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).add({blob,createdAt:Date.now(),type:blob.type||'image/jpeg'});
+ await new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)});
+ setStatus('monitorStatus','Photo captured and saved in this phone.');if(unlocked)await renderGallery();
+}
+async function getPhotos(){return new Promise((resolve,reject)=>{const r=db.transaction(STORE).objectStore(STORE).getAll();r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}
+async function renderGallery(){
+ const photos=(await getPhotos()).sort((a,b)=>b.createdAt-a.createdAt);$('photoCount').textContent=photos.length+' photos saved in this phone.';$('gallery').innerHTML='';
+ for(const p of photos){const url=URL.createObjectURL(p.blob),f=document.createElement('figure'),img=document.createElement('img'),cap=document.createElement('figcaption');img.src=url;img.alt='Captured classroom image';cap.textContent=new Date(p.createdAt).toLocaleString();f.append(img,cap);$('gallery').append(f)}
+}
+async function captureOnce(){
+ try{
+  setStatus('monitorStatus','Sustained speech detected for over 5 seconds. Opening camera…');
+  cameraStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+  const video=$('preview');video.srcObject=cameraStream;video.classList.remove('hidden');await video.play();
+  await new Promise(r=>setTimeout(r,450));
+  const canvas=document.createElement('canvas');canvas.width=video.videoWidth||1280;canvas.height=video.videoHeight||720;
+  canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
+  const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.88));if(!blob)throw Error('Could not create photo.');
+  await savePhoto(blob);
+ }catch(e){setStatus('monitorStatus','Camera/photo error: '+(e.message||e))}
+ finally{if(cameraStream){cameraStream.getTracks().forEach(t=>t.stop());cameraStream=null}$('preview').srcObject=null;$('preview').classList.add('hidden')}
+}
+function currentRms(){
+ if(!analyser||!dataArray)return 0;analyser.getFloatTimeDomainData(dataArray);let sum=0;
+ for(let i=0;i<dataArray.length;i++)sum+=dataArray[i]*dataArray[i];
+ return Math.sqrt(sum/dataArray.length);
+}
+function startRecognition(){
+ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+ if(!SR){setStatus('monitorStatus','Microphone is active, but speech recognition is unavailable in this browser. Try current Chrome on Android.');return}
+ recognition=new SR();recognition.continuous=true;recognition.interimResults=true;recognition.lang='en-IN';
+ recognition.onresult=e=>{
+  const parts=[];for(let i=e.resultIndex;i<e.results.length;i++){const t=e.results[i][0]?.transcript?.trim();if(t)parts.push(t)}
+  if(parts.length){lastSpeechAt=Date.now();if(!speechActiveAt)speechActiveAt=Date.now()}
+ };
+ recognition.onerror=e=>{setStatus('monitorStatus','Speech recognition warning: '+e.error+'. Keep monitoring open; detection may be limited.')};
+ recognition.onend=()=>{if(monitoring){try{recognition.start()}catch(err){}}};
+ try{recognition.start()}catch(e){setStatus('monitorStatus','Could not start speech recognition: '+e.message)}
+}
+async function startMonitoring(){
+ try{
+  if(!navigator.mediaDevices?.getUserMedia)throw Error('Camera/microphone access requires HTTPS in a supported browser.');
+  audioStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},video:false});
+  audioCtx=new (window.AudioContext||window.webkitAudioContext)();await audioCtx.resume();
+  const source=audioCtx.createMediaStreamSource(audioStream);analyser=audioCtx.createAnalyser();analyser.fftSize=1024;dataArray=new Float32Array(analyser.fftSize);source.connect(analyser);
+  monitoring=true;speechActiveAt=0;lastSpeechAt=0;eventCaptured=false;
+  $('startBtn').disabled=true;$('stopBtn').disabled=false;$('liveDot').classList.add('on');
+  setStatus('monitorStatus','Listening to the surrounding sounds. Waiting for recognised speech…');
+  startRecognition();
+  tick=setInterval(async()=>{
+   const rms=currentRms();level=Math.min(100,Math.round(rms*650));$('meterBar').style.width=level+'%';
+   const now=Date.now(),recognisedRecently=lastSpeechAt&&now-lastSpeechAt<2600;
+   const audible=rms>0.012;
+   if(recognisedRecently&&audible){
+    if(!speechActiveAt)speechActiveAt=now;
+    const duration=now-speechActiveAt;
+    if(duration>=5000&&!eventCaptured){eventCaptured=true;await captureOnce()}
+    else if(!eventCaptured)setStatus('monitorStatus','Speech activity detected · '+(duration/1000).toFixed(1)+' / 5 seconds');
+   }else if(!recognisedRecently||!audible){
+    if(speechActiveAt&&now-speechActiveAt>1800){speechActiveAt=0;eventCaptured=false}
+    if(!eventCaptured)setStatus('monitorStatus','Listening to the surrounding sounds. Waiting for recognised speech…');
+   }
+  },200);
+ }catch(e){setStatus('monitorStatus','Could not start monitoring: '+(e.message||e))}
+}
+function stopMonitoring(){
+ monitoring=false;if(tick){clearInterval(tick);tick=null}
+ if(recognition){recognition.onend=null;try{recognition.stop()}catch(e){}recognition=null}
+ if(audioStream){audioStream.getTracks().forEach(t=>t.stop());audioStream=null}
+ if(cameraStream){cameraStream.getTracks().forEach(t=>t.stop());cameraStream=null}
+ if(audioCtx){audioCtx.close().catch(()=>{});audioCtx=null}
+ analyser=null;dataArray=null;speechActiveAt=0;lastSpeechAt=0;eventCaptured=false;
+ $('preview').srcObject=null;$('preview').classList.add('hidden');$('startBtn').disabled=false;$('stopBtn').disabled=true;$('liveDot').classList.remove('on');$('meterBar').style.width='0%';
+ setStatus('monitorStatus','Monitoring stopped. Microphone and camera are off.');
+}
+async function exportBackup(){
+ const photos=await getPhotos();if(!photos.length){alert('No photos saved yet.');return}
+ for(let i=0;i<photos.length;i++){const url=URL.createObjectURL(photos[i].blob),a=document.createElement('a');a.href=url;a.download='AI-Class-Monitor-'+new Date(photos[i].createdAt).toISOString().replace(/[:.]/g,'-')+'.jpg';a.click();setTimeout(()=>URL.revokeObjectURL(url),2500)}
+}
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;$('installBtn').classList.remove('hidden')});
+$('installBtn').onclick=async()=>{if(deferredInstallPrompt){deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;$('installBtn').classList.add('hidden')}else{setStatus('monitorStatus','In Chrome, open ⋮ menu and choose Install app or Add to Home screen.')}};
+window.addEventListener('appinstalled',()=>{$('installBtn').classList.add('hidden');setStatus('monitorStatus','AI Class Monitor installed on this phone.')});
+$('startBtn').onclick=startMonitoring;$('stopBtn').onclick=stopMonitoring;
+$('registerBtn').onclick=registerPasskey;$('galleryBtn').onclick=unlockGallery;$('lockBtn').onclick=lockGallery;
+$('refreshBtn').onclick=renderGallery;$('backupBtn').onclick=exportBackup;
+init().catch(e=>setStatus('authStatus','Local storage error: '+e.message));
+if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+</script>
+</main>
+</body>
+</html>
